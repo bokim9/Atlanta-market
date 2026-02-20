@@ -506,8 +506,19 @@
         Apple로 계속하기
       </button>
 
-      <p class="login-terms">
-        계속하면 당근마켓의 <a href="#">이용약관</a> 및<br>
+      <!-- 이메일 로그인 -->
+      <div class="login-divider">또는 이메일로</div>
+      <div id="email-tab" data-mode="login">
+        <input class="field-input" id="email-input" type="email" placeholder="이메일" style="margin-bottom:10px">
+        <input class="field-input" id="pw-input" type="password" placeholder="비밀번호 (6자 이상)">
+        <button class="nickname-submit" id="email-submit-btn" onclick="emailLogin()" style="margin-top:10px">로그인</button>
+        <p id="email-toggle" style="font-size:12px;color:var(--muted);text-align:center;margin-top:12px">
+          계정이 없으신가요? <span onclick="toggleEmailMode()" style="color:var(--accent);cursor:pointer;text-decoration:underline">회원가입</span>
+        </p>
+      </div>
+
+      <p class="login-terms" style="margin-top:16px">
+        계속하면 애틀란타마켓의 <a href="#">이용약관</a> 및<br>
         <a href="#">개인정보처리방침</a>에 동의하게 됩니다.
       </p>
     </div>
@@ -603,7 +614,30 @@
 <!-- TOAST -->
 <div class="toast" id="toast"></div>
 
-<script>
+<!-- Firebase SDK -->
+<script type="module">
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, sendEmailVerification } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+import { getFirestore, doc, setDoc, getDoc } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+
+// ============================
+// FIREBASE 초기화
+// ============================
+const firebaseConfig = {
+  apiKey: "AIzaSyAvXqZCtXKQFN8qCBB3BY2u0qpg1QFQvd4",
+  authDomain: "atlanta-market.firebaseapp.com",
+  projectId: "atlanta-market",
+  storageBucket: "atlanta-market.firebasestorage.app",
+  messagingSenderId: "540130171802",
+  appId: "1:540130171802:web:c95a670c5cead4cef27823",
+  measurementId: "G-X8WXCGNN1T"
+};
+
+const app  = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db   = getFirestore(app);
+const googleProvider = new GoogleAuthProvider();
+
 // ============================
 // DATA
 // ============================
@@ -679,9 +713,9 @@ document.querySelectorAll('.tag').forEach(t => {
   });
 });
 
-function likeItem(btn) {
+window.likeItem = function(btn) {
   btn.textContent = btn.textContent === '🤍' ? '❤️' : '🤍';
-}
+};
 
 // ============================
 // OVERLAYS
@@ -694,36 +728,122 @@ function closeOverlay(id) {
   document.getElementById(id).classList.remove('open');
   document.body.style.overflow = '';
 }
-function bgClose(e, id) {
+window.bgClose = function(e, id) {
   if (e.target === document.getElementById(id)) closeOverlay(id);
-}
+};
+window.closeOverlay = closeOverlay;
+
+// ============================
+// AUTH STATE — 자동 로그인 감지
+// ============================
+onAuthStateChanged(auth, async (user) => {
+  if (user) {
+    // Firebase에서 유저 프로필 가져오기
+    const snap = await getDoc(doc(db, 'users', user.uid));
+    if (snap.exists()) {
+      // 기존 유저 — 바로 로그인
+      currentUser = { uid: user.uid, ...snap.data() };
+      closeOverlay('login-overlay');
+      closeOverlay('nickname-overlay');
+      updateNav();
+    } else {
+      // 신규 유저 — 닉네임 설정 필요
+      currentUser = {
+        uid: user.uid,
+        provider: user.providerData[0]?.providerId || 'email',
+        color: COLORS[Math.floor(Math.random() * COLORS.length)]
+      };
+      closeOverlay('login-overlay');
+      openOverlay('nickname-overlay');
+    }
+  } else {
+    currentUser = null;
+    const actions = document.getElementById('nav-actions');
+    if (actions) {
+      actions.innerHTML = `
+        <button class="btn btn-ghost" onclick="openLogin()">로그인</button>
+        <button class="btn btn-primary" onclick="requireLogin()">물건 팔기</button>
+      `;
+    }
+  }
+});
 
 // ============================
 // LOGIN
 // ============================
-function openLogin() { openOverlay('login-overlay'); }
+window.openLogin = function() { openOverlay('login-overlay'); };
 
-function socialLogin(provider) {
-  closeOverlay('login-overlay');
-  // In production: redirect to real OAuth flow
-  currentUser = {
-    provider,
-    color: COLORS[Math.floor(Math.random() * COLORS.length)]
-  };
-  openOverlay('nickname-overlay');
-}
+window.socialLogin = async function(provider) {
+  try {
+    showToast('로그인 중...');
+    if (provider === 'google') {
+      await signInWithPopup(auth, googleProvider);
+      // onAuthStateChanged가 자동으로 처리해요
+    } else if (provider === 'apple') {
+      showToast('Apple 로그인은 곧 지원 예정이에요!');
+    }
+  } catch (err) {
+    console.error(err);
+    if (err.code === 'auth/popup-closed-by-user') {
+      showToast('로그인 창이 닫혔어요. 다시 시도해주세요.');
+    } else {
+      showToast('로그인 중 오류가 발생했어요. 다시 시도해주세요.');
+    }
+  }
+};
 
-function requireLogin() {
+// 이메일 로그인
+window.emailLogin = async function() {
+  const email = document.getElementById('email-input').value.trim();
+  const pw    = document.getElementById('pw-input').value;
+  const isNew = document.getElementById('email-tab').dataset.mode === 'signup';
+
+  if (!email || !pw) { showToast('이메일과 비밀번호를 입력해주세요'); return; }
+
+  try {
+    showToast('처리 중...');
+    if (isNew) {
+      const cred = await createUserWithEmailAndPassword(auth, email, pw);
+      await sendEmailVerification(cred.user);
+      showToast('인증 이메일을 보냈어요! 메일함을 확인해주세요 📧');
+    } else {
+      await signInWithEmailAndPassword(auth, email, pw);
+    }
+  } catch (err) {
+    if (err.code === 'auth/email-already-in-use') showToast('이미 가입된 이메일이에요');
+    else if (err.code === 'auth/wrong-password') showToast('비밀번호가 틀렸어요');
+    else if (err.code === 'auth/user-not-found') showToast('가입된 계정이 없어요');
+    else if (err.code === 'auth/weak-password') showToast('비밀번호는 6자 이상이어야 해요');
+    else showToast('오류가 발생했어요. 다시 시도해주세요.');
+  }
+};
+
+window.toggleEmailMode = function() {
+  const tab = document.getElementById('email-tab');
+  const btn = document.getElementById('email-submit-btn');
+  const toggle = document.getElementById('email-toggle');
+  if (tab.dataset.mode === 'login') {
+    tab.dataset.mode = 'signup';
+    btn.textContent = '회원가입';
+    toggle.innerHTML = '이미 계정이 있으신가요? <span onclick="toggleEmailMode()" style="color:var(--accent);cursor:pointer;text-decoration:underline">로그인</span>';
+  } else {
+    tab.dataset.mode = 'login';
+    btn.textContent = '로그인';
+    toggle.innerHTML = '계정이 없으신가요? <span onclick="toggleEmailMode()" style="color:var(--accent);cursor:pointer;text-decoration:underline">회원가입</span>';
+  }
+};
+
+window.requireLogin = function() {
   if (!currentUser) {
-    openLogin();
+    openOverlay('login-overlay');
     showToast('로그인 후 이용하실 수 있어요 😊');
   } else {
     showToast('준비 중인 기능이에요!');
   }
-}
+};
 
 // ============================
-// NICKNAME SETUP
+// NICKNAME SETUP — Firestore에 저장
 // ============================
 const nickInput = document.getElementById('nickname-input');
 const locSelect = document.getElementById('loc-select');
@@ -731,10 +851,9 @@ const nickHint  = document.getElementById('nickname-hint');
 const nickBtn   = document.getElementById('nickname-submit');
 
 function checkForm() {
-  const val = nickInput.value.trim();
-  const loc = locSelect.value;
+  const val   = nickInput.value.trim();
+  const loc   = locSelect.value;
   const valid = /^[가-힣a-zA-Z0-9]{2,12}$/.test(val);
-
   if (val.length > 0 && !valid) {
     nickHint.textContent = '2~12자, 한글·영문·숫자만 사용 가능해요';
     nickHint.className = 'field-hint error';
@@ -747,28 +866,39 @@ function checkForm() {
   }
   nickBtn.disabled = !(valid && loc);
 }
-
 nickInput.addEventListener('input', checkForm);
 locSelect.addEventListener('change', checkForm);
 
-function completeSetup() {
-  currentUser = {
-    ...currentUser,
-    nickname: nickInput.value.trim(),
-    location: locSelect.value
-  };
-  closeOverlay('nickname-overlay');
-  updateNav();
-  showToast(`환영해요, ${currentUser.nickname}님! 🎉`);
-}
+window.completeSetup = async function() {
+  const nickname = nickInput.value.trim();
+  const location = locSelect.value;
+  try {
+    // Firestore에 유저 프로필 저장
+    await setDoc(doc(db, 'users', currentUser.uid), {
+      nickname,
+      location,
+      provider: currentUser.provider,
+      color: currentUser.color,
+      createdAt: new Date().toISOString()
+    });
+    currentUser = { ...currentUser, nickname, location };
+    closeOverlay('nickname-overlay');
+    updateNav();
+    showToast(`환영해요, ${nickname}님! 🎉`);
+  } catch (err) {
+    console.error(err);
+    showToast('저장 중 오류가 발생했어요. 다시 시도해주세요.');
+  }
+};
 
 // ============================
-// NAV — logged in state
+// NAV — 로그인 후 상태
 // ============================
 function updateNav() {
   const actions = document.getElementById('nav-actions');
-  const initial = currentUser.nickname[0];
-  const providerLabel = currentUser.provider === 'google' ? 'Google' : 'Apple';
+  const initial = currentUser.nickname ? currentUser.nickname[0] : '?';
+  const providerLabel = currentUser.provider === 'google.com' ? 'Google' :
+                        currentUser.provider === 'apple.com'  ? 'Apple'  : '이메일';
 
   actions.innerHTML = `
     <button class="btn btn-primary" onclick="requireLogin()">물건 팔기</button>
@@ -782,15 +912,15 @@ function updateNav() {
         <div class="dropdown-item">👤 내 프로필</div>
         <div class="dropdown-item">📦 내 판매 내역</div>
         <div class="dropdown-item">❤️ 관심 목록</div>
-        <div class="dropdown-item danger" onclick="logout()">로그아웃</div>
+        <div class="dropdown-item danger" onclick="doLogout()">로그아웃</div>
       </div>
     </div>
   `;
 }
 
-function toggleDrop() {
+window.toggleDrop = function() {
   document.getElementById('user-drop').classList.toggle('open');
-}
+};
 
 document.addEventListener('click', e => {
   const drop = document.getElementById('user-drop');
@@ -800,15 +930,10 @@ document.addEventListener('click', e => {
   }
 });
 
-function logout() {
-  currentUser = null;
-  const actions = document.getElementById('nav-actions');
-  actions.innerHTML = `
-    <button class="btn btn-ghost" onclick="openLogin()">로그인</button>
-    <button class="btn btn-primary" onclick="requireLogin()">물건 팔기</button>
-  `;
+window.doLogout = async function() {
+  await signOut(auth);
   showToast('로그아웃 되었습니다');
-}
+};
 
 // ============================
 // PRODUCT MODAL
@@ -819,14 +944,11 @@ function openProduct(item, seller) {
   document.getElementById('pm-price').textContent = item.price + '원';
   document.getElementById('pm-desc').textContent  = item.desc;
   document.getElementById('pm-time').textContent  = item.time;
-
   const av = document.getElementById('pm-av');
   av.textContent = seller.name[0];
   av.style.background = seller.color;
-
   document.getElementById('pm-name').textContent = seller.name;
   document.getElementById('pm-loc').innerHTML = `📍 ${seller.location}`;
-
   openOverlay('product-overlay');
 }
 
@@ -839,6 +961,8 @@ function showToast(msg) {
   t.classList.add('show');
   setTimeout(() => t.classList.remove('show'), 2800);
 }
+window.showToast = showToast;
+
 </script>
 </body>
 </html>
